@@ -32,7 +32,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { PageHeader } from "@/components/ui/page-header"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Separator } from "@/components/ui/separator"
 
 interface RouteChangelog {
   id: string
@@ -710,10 +710,11 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
   const [pgAddLocSearch, setPgAddLocSearch] = useState("")
   const [pgAddLocSelected, setPgAddLocSelected] = useState<Set<string>>(new Set())
   const [shareDialogOpen, setShareDialogOpen] = useState(false)
+  const [shareGenerated, setShareGenerated] = useState(false)
   const [shareUrl, setShareUrl] = useState("")
   const [shareCode, setShareCode] = useState("")
   const [shareCopied, setShareCopied] = useState(false)
-  const [shareActiveTab, setShareActiveTab] = useState<'new' | 'saved'>('new')
+  const [shareShowSaved, setShareShowSaved] = useState(false)
   const [shareLabel, setShareLabel] = useState("")
   const [savedLinks, setSavedLinks] = useState<ShareIndexEntry[]>([])
   const [editingLinkCode, setEditingLinkCode] = useState<string | null>(null)
@@ -1663,7 +1664,7 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
     [effectiveColumns]
   )
 
-  const generateShare = useCallback(() => {
+  const generateShare = useCallback(async () => {
     const route = routes.find(r => r.id === currentRouteId)
     if (!route) return
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
@@ -1683,7 +1684,12 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
       createdAt,
     }
     try {
-      localStorage.setItem(`fcalendar_share_${code}`, JSON.stringify(data))
+      const res = await fetch('/api/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, data }),
+      })
+      if (!res.ok) throw new Error('Server error')
     } catch {
       toast.error('Failed to create share link')
       return
@@ -1692,14 +1698,27 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
     const index = [entry, ...loadShareIndex()]
     saveShareIndex(index)
     setSavedLinks(index)
-    const url = window.location.origin + '/routelistpage/' + code
+    const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+    const url = window.location.origin + base + '/routelistpage/' + code
     setShareUrl(url)
     setShareCode(code)
     setShareLabel('')
     setShareCopied(false)
-    setShareActiveTab('new')
-    setShareDialogOpen(true)
+    setShareGenerated(true)
+    setShareShowSaved(false)
   }, [routes, currentRouteId, sortedDeliveryPoints, visibleDataColumns, routeIndexById, routeColorPalette])
+
+  const openShareModal = useCallback(() => {
+    setShareGenerated(false)
+    setShareShowSaved(false)
+    setShareUrl("")
+    setShareCode("")
+    setShareLabel("")
+    setShareCopied(false)
+    setSavedLinks(loadShareIndex())
+    setEditingLinkCode(null)
+    setShareDialogOpen(true)
+  }, [])
 
   // Compute distances for Km column following actual road routes (with haversine fallback)
   // direct → road distance from start point to each row
@@ -3293,15 +3312,17 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
                                 </button>
                               )}
                             </div>
+                            {!isEditMode && (
                             <button
                               type="button"
-                              onClick={generateShare}
+                              onClick={openShareModal}
                               title="Share route table"
                               className="shrink-0 h-8 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-border bg-background text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
                             >
                               <Share2 className="size-3.5" />
                               Share Link
                             </button>
+                            )}
                             {(isPlaygroundMode || isEditMode) && (
                               <button
                                 type="button"
@@ -4608,208 +4629,244 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
 
       {/* Share Route Dialog */}
       <Dialog open={shareDialogOpen} onOpenChange={(open) => {
-        if (!open) { setShareDialogOpen(false); setEditingLinkCode(null) }
+        if (!open) { setShareDialogOpen(false); setEditingLinkCode(null); setShareShowSaved(false) }
       }}>
-        <DialogContent className="flex max-h-[min(82vh,38rem)] w-[93vw] max-w-[22.5rem] flex-col gap-0 overflow-hidden rounded-[22px] border border-border/80 bg-card/95 p-0 shadow-[0_16px_38px_hsl(var(--foreground)/0.14)] backdrop-blur-md supports-[backdrop-filter]:bg-card/90 dark:shadow-[0_18px_42px_hsl(var(--background)/0.55)] md:max-w-[23.5rem]">
-          {/* Header */}
-          <div className="shrink-0 px-5 pt-5 pb-3 border-b border-border/60">
-            <DialogTitle className="text-sm font-bold flex items-center gap-2">
-              <Share2 className="size-4 text-primary" />
-              Share Link
-            </DialogTitle>
-            <DialogDescription className="sr-only">Share route table as a link</DialogDescription>
-          </div>
+        <DialogContent className="flex max-h-[min(88vh,40rem)] w-[94vw] max-w-sm flex-col gap-0 overflow-hidden rounded-2xl border border-border/60 bg-card p-0 shadow-xl">
+          <DialogDescription className="sr-only">Share route table as a link</DialogDescription>
 
-          <Tabs value={shareActiveTab} onValueChange={(v) => {
-            setShareActiveTab(v as 'new' | 'saved')
-            if (v === 'saved') setSavedLinks(loadShareIndex())
-          }} className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            <TabsList className="mx-4 mt-3 mb-0 shrink-0 grid grid-cols-2 h-8">
-              <TabsTrigger value="new" className="text-xs">New Link</TabsTrigger>
-              <TabsTrigger value="saved" className="text-xs">
-                Saved{savedLinks.length > 0 ? ` (${savedLinks.length})` : ''}
-              </TabsTrigger>
-            </TabsList>
-
-            {/* ── New Link Tab ── */}
-            <TabsContent value="new" className="flex-1 overflow-auto flex flex-col px-4 pt-3 pb-4 space-y-3 mt-0">
-              {/* Label */}
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-muted-foreground">Label <span className="opacity-50">(optional)</span></label>
-                <Input
-                  value={shareLabel}
-                  onChange={(e) => {
-                    const val = e.target.value
-                    setShareLabel(val)
-                    if (shareCode) {
-                      try {
-                        const raw = localStorage.getItem(`fcalendar_share_${shareCode}`)
-                        if (raw) {
-                          const parsed = JSON.parse(raw)
-                          localStorage.setItem(`fcalendar_share_${shareCode}`, JSON.stringify({ ...parsed, label: val }))
-                        }
-                      } catch { /**/ }
-                      const updated = loadShareIndex().map(e => e.code === shareCode ? { ...e, label: val } : e)
-                      saveShareIndex(updated)
-                      setSavedLinks(updated)
-                    }
-                  }}
-                  placeholder="e.g. Morning run for driver"
-                  className="h-8 text-[11px]"
-                />
-              </div>
-              {/* URL row */}
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-                <span className="flex-1 text-[10px] font-mono text-foreground truncate select-all">{shareUrl}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(shareUrl).then(() => {
-                      setShareCopied(true)
-                      setTimeout(() => setShareCopied(false), 2000)
-                    }).catch(() => toast.error('Failed to copy'))
-                  }}
-                  className="shrink-0 size-7 inline-flex items-center justify-center rounded-md border border-border bg-background hover:bg-muted/60 transition-colors"
-                  title="Copy link"
-                >
-                  {shareCopied ? <CheckIcon className="size-3.5 text-green-500" /> : <Copy className="size-3.5 text-muted-foreground" />}
-                </button>
-              </div>
-              <p className="text-[10px] text-muted-foreground/60">Works on this device only — stored locally.</p>
-              {/* Action buttons */}
-              <div className="flex items-center gap-2 pt-1">
-                <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}>
-                  <ExternalLink className="size-3.5" /> Open
-                </Button>
-                <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => { setShareActiveTab('saved'); setSavedLinks(loadShareIndex()) }}>
-                  Saved Links
-                </Button>
-                <Button size="sm" className="h-8 text-xs ml-auto" onClick={() => setShareDialogOpen(false)}>Done</Button>
-              </div>
-            </TabsContent>
-
-            {/* ── Saved Links Tab ── */}
-            <TabsContent value="saved" className="flex-1 flex flex-col min-h-0 overflow-hidden mt-0">
-              <div className="shrink-0 px-4 py-2 border-b border-border/40 flex items-center gap-2">
-                <span className="text-[11px] text-muted-foreground flex-1">{savedLinks.length} link{savedLinks.length !== 1 ? 's' : ''} saved</span>
-              </div>
-              <div className="flex-1 overflow-auto">
-                {savedLinks.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full py-8 text-center px-4">
-                    <Share2 className="size-8 text-muted-foreground/25 mb-3" />
-                    <p className="text-sm font-medium text-muted-foreground">No saved links</p>
-                    <p className="text-xs text-muted-foreground/60 mt-1">Generate one from the New Link tab.</p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-border/40">
-                    {savedLinks.map(link => {
-                      const linkUrl = window.location.origin + '/routelistpage/' + link.code
-                      return (
-                        <div key={link.code} className="px-4 py-3 space-y-2">
-                          {/* Label / edit row */}
-                          {editingLinkCode === link.code ? (
-                            <div className="flex gap-1.5 items-center">
-                              <Input
-                                value={editingLinkLabel}
-                                onChange={(e) => setEditingLinkLabel(e.target.value)}
-                                className="h-7 text-[11px] flex-1 min-w-0"
-                                autoFocus
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    const updated = loadShareIndex().map(en => en.code === link.code ? { ...en, label: editingLinkLabel } : en)
-                                    saveShareIndex(updated)
-                                    try {
-                                      const raw = localStorage.getItem(`fcalendar_share_${link.code}`)
-                                      if (raw) localStorage.setItem(`fcalendar_share_${link.code}`, JSON.stringify({ ...JSON.parse(raw), label: editingLinkLabel }))
-                                    } catch { /**/ }
-                                    setSavedLinks(updated)
-                                    setEditingLinkCode(null)
-                                  }
-                                  if (e.key === 'Escape') setEditingLinkCode(null)
-                                }}
-                              />
-                              <button
-                                onClick={() => {
+          {/* ── Saved Links View ───────────────────────────────────────────── */}
+          {shareShowSaved ? (() => {
+            const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+            return (
+              <>
+                {/* Header */}
+                <div className="shrink-0 px-4 pt-4 pb-3 border-b border-border/50 flex items-center gap-2.5">
+                  <button
+                    onClick={() => setShareShowSaved(false)}
+                    className="shrink-0 size-7 inline-flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+                  >
+                    <ChevronLeft className="size-4" />
+                  </button>
+                  <DialogTitle className="text-sm font-semibold">
+                    Saved Links <span className="text-muted-foreground font-normal">({savedLinks.length})</span>
+                  </DialogTitle>
+                </div>
+                {/* List */}
+                <div className="flex-1 overflow-auto">
+                  {savedLinks.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full py-10 text-center px-6">
+                      <Share2 className="size-8 text-muted-foreground/20 mb-3" />
+                      <p className="text-sm font-medium text-muted-foreground">No saved links</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">Generate a link to see it here.</p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-border/40">
+                      {savedLinks.map(link => {
+                        const linkUrl = window.location.origin + base + '/routelistpage/' + link.code
+                        return (
+                          <div key={link.code} className="px-4 py-3 space-y-2">
+                            {editingLinkCode === link.code ? (
+                              <div className="flex gap-1.5 items-center">
+                                <Input
+                                  value={editingLinkLabel}
+                                  onChange={(e) => setEditingLinkLabel(e.target.value)}
+                                  className="h-7 text-[11px] flex-1 min-w-0"
+                                  autoFocus
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      const updated = loadShareIndex().map(en => en.code === link.code ? { ...en, label: editingLinkLabel } : en)
+                                      saveShareIndex(updated)
+                                      setSavedLinks(updated)
+                                      setEditingLinkCode(null)
+                                    }
+                                    if (e.key === 'Escape') setEditingLinkCode(null)
+                                  }}
+                                />
+                                <button onClick={() => {
                                   const updated = loadShareIndex().map(en => en.code === link.code ? { ...en, label: editingLinkLabel } : en)
                                   saveShareIndex(updated)
-                                  try {
-                                    const raw = localStorage.getItem(`fcalendar_share_${link.code}`)
-                                    if (raw) localStorage.setItem(`fcalendar_share_${link.code}`, JSON.stringify({ ...JSON.parse(raw), label: editingLinkLabel }))
-                                  } catch { /**/ }
-                                  setSavedLinks(updated)
-                                  setEditingLinkCode(null)
-                                }}
-                                className="shrink-0 size-7 inline-flex items-center justify-center rounded-md border border-border hover:bg-muted/60 transition-colors text-green-600"
+                                  setSavedLinks(updated); setEditingLinkCode(null)
+                                }} className="shrink-0 size-7 inline-flex items-center justify-center rounded-md border border-border hover:bg-muted/60 transition-colors text-green-600">
+                                  <CheckIcon className="size-3.5" />
+                                </button>
+                                <button onClick={() => setEditingLinkCode(null)} className="shrink-0 size-7 inline-flex items-center justify-center rounded-md border border-border hover:bg-muted/60 transition-colors text-muted-foreground">
+                                  <X className="size-3.5" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] font-semibold flex-1 truncate leading-tight">{link.label || link.routeName}</span>
+                                <button onClick={() => { setEditingLinkCode(link.code); setEditingLinkLabel(link.label || '') }} className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" title="Rename">
+                                  <Edit2 className="size-3" />
+                                </button>
+                              </div>
+                            )}
+                            <div className="text-[9px] text-muted-foreground/55 leading-tight font-mono">
+                              {link.routeCode} · {link.routeShift} · {new Date(link.createdAt).toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            </div>
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={() => { navigator.clipboard.writeText(linkUrl).then(() => { setCopiedLinkCode(link.code); setTimeout(() => setCopiedLinkCode(null), 2000) }).catch(() => toast.error('Failed to copy')) }}
+                                className="h-7 px-2.5 inline-flex items-center gap-1 rounded-lg border border-border bg-background text-[10px] font-medium hover:bg-muted/60 transition-colors"
                               >
-                                <CheckIcon className="size-3.5" />
+                                {copiedLinkCode === link.code ? <CheckIcon className="size-3 text-green-500" /> : <Copy className="size-3" />}
+                                {copiedLinkCode === link.code ? 'Copied' : 'Copy'}
                               </button>
                               <button
-                                onClick={() => setEditingLinkCode(null)}
-                                className="shrink-0 size-7 inline-flex items-center justify-center rounded-md border border-border hover:bg-muted/60 transition-colors text-muted-foreground"
+                                onClick={() => window.open(linkUrl, '_blank', 'noopener,noreferrer')}
+                                className="h-7 px-2.5 inline-flex items-center gap-1 rounded-lg border border-border bg-background text-[10px] font-medium hover:bg-muted/60 transition-colors"
                               >
-                                <X className="size-3.5" />
+                                <ExternalLink className="size-3" /> Open
                               </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[11px] font-medium flex-1 truncate leading-tight">
-                                {link.label || link.routeName}
-                              </span>
                               <button
-                                onClick={() => { setEditingLinkCode(link.code); setEditingLinkLabel(link.label || '') }}
-                                className="shrink-0 size-6 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
-                                title="Rename"
-                              >
-                                <Edit2 className="size-3" />
-                              </button>
-                            </div>
-                          )}
-                          {/* Meta */}
-                          <div className="text-[9px] text-muted-foreground/60 leading-tight">
-                            {link.routeCode} · {link.routeShift} · {new Date(link.createdAt).toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' })}
-                          </div>
-                          {/* Action buttons */}
-                          <div className="flex gap-1.5">
-                            <button
-                              onClick={() => {
-                                navigator.clipboard.writeText(linkUrl).then(() => {
-                                  setCopiedLinkCode(link.code)
-                                  setTimeout(() => setCopiedLinkCode(null), 2000)
-                                }).catch(() => toast.error('Failed to copy'))
-                              }}
-                              className="h-7 px-2 inline-flex items-center gap-1 rounded-md border border-border bg-background text-[10px] font-medium hover:bg-muted/60 transition-colors"
-                            >
-                              {copiedLinkCode === link.code ? <CheckIcon className="size-3 text-green-500" /> : <Copy className="size-3" />}
-                              Copy
-                            </button>
-                            <button
-                              onClick={() => window.open(linkUrl, '_blank', 'noopener,noreferrer')}
-                              className="h-7 px-2 inline-flex items-center gap-1 rounded-md border border-border bg-background text-[10px] font-medium hover:bg-muted/60 transition-colors"
-                            >
-                              <ExternalLink className="size-3" /> Open
-                            </button>
-                            <button
-                              onClick={() => {
-                                try {
-                                  localStorage.removeItem(`fcalendar_share_${link.code}`)
+                                onClick={() => {
+                                  fetch(`/api/share/${link.code}`, { method: 'DELETE' }).catch(() => {})
                                   const updated = loadShareIndex().filter(en => en.code !== link.code)
-                                  saveShareIndex(updated)
-                                  setSavedLinks(updated)
-                                } catch { toast.error('Failed to delete') }
-                              }}
-                              className="h-7 px-2 inline-flex items-center gap-1 rounded-md border border-border bg-background text-[10px] font-medium text-destructive hover:bg-destructive/10 transition-colors ml-auto"
-                            >
-                              <Trash2 className="size-3" /> Delete
-                            </button>
+                                  saveShareIndex(updated); setSavedLinks(updated)
+                                }}
+                                className="h-7 px-2.5 inline-flex items-center gap-1 rounded-lg border border-border bg-background text-[10px] font-medium text-destructive hover:bg-destructive/10 transition-colors ml-auto"
+                              >
+                                <Trash2 className="size-3" /> Delete
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      )
-                    })}
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            )
+          })() : shareGenerated ? (
+            /* ── Link Ready View ─────────────────────────────────────────── */
+            (() => {
+              const shareRoute = routes.find(r => r.id === currentRouteId)
+              return (
+                <>
+                  {/* Header */}
+                  <div className="shrink-0 px-5 pt-5 pb-4">
+                    <DialogTitle className="text-base font-bold flex items-center gap-2.5">
+                      <CheckIcon className="size-4 text-green-500 shrink-0" />
+                      Link Generated
+                    </DialogTitle>
+                    <p className="text-[11px] text-muted-foreground mt-1 ml-[2.625rem]">Ready to share on this device</p>
                   </div>
-                )}
-              </div>
-            </TabsContent>
-          </Tabs>
+                  <Separator />
+                  <div className="flex-1 overflow-auto px-5 py-4 flex flex-col gap-4">
+                    {/* Route pill */}
+                    {shareRoute && (
+                      <div className="flex items-center gap-2.5 rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5">
+                        <div className="size-2.5 rounded-full shrink-0" style={{ background: shareRoute.color || routeColorPalette[(routeIndexById.get(shareRoute.id) ?? 0) % routeColorPalette.length] }} />
+                        <span className="text-[12px] font-semibold truncate flex-1">{shareRoute.name}</span>
+                        <span className="text-[10px] font-mono bg-background px-1.5 py-0.5 rounded border border-border/50 shrink-0">{shareRoute.code}</span>
+                        <span className="text-[10px] font-bold shrink-0" style={{ color: shareRoute.shift === 'AM' ? 'hsl(38 95% 45%)' : 'hsl(250 80% 65%)' }}>{shareRoute.shift}</span>
+                      </div>
+                    )}
+                    {/* Label */}
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-medium text-muted-foreground">Label <span className="opacity-50">(optional)</span></label>
+                      <Input
+                        value={shareLabel}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          setShareLabel(val)
+                          if (shareCode) {
+                            const updated = loadShareIndex().map(e => e.code === shareCode ? { ...e, label: val } : e)
+                            saveShareIndex(updated); setSavedLinks(updated)
+                          }
+                        }}
+                        placeholder="e.g. Morning run for driver"
+                        className="h-8 text-[11px]"
+                      />
+                    </div>
+                    {/* URL */}
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-medium text-muted-foreground">Link</label>
+                      <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/40 pl-3 pr-1.5 py-1.5">
+                        <span className="flex-1 text-[10px] font-mono text-foreground truncate select-all">{shareUrl}</span>
+                        <button
+                          type="button"
+                          onClick={() => { navigator.clipboard.writeText(shareUrl).then(() => { setShareCopied(true); setTimeout(() => setShareCopied(false), 2000) }).catch(() => toast.error('Failed to copy')) }}
+                          className={`shrink-0 h-7 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-[11px] font-semibold transition-colors ${shareCopied ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-background border border-border hover:bg-muted/60'}`}
+                        >
+                          {shareCopied ? <><CheckIcon className="size-3.5" />Copied</> : <><Copy className="size-3.5" />Copy</>}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <Separator />
+                  <div className="shrink-0 px-5 py-3 flex items-center gap-2">
+                    <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}>
+                      <ExternalLink className="size-3.5" /> Open
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => { setSavedLinks(loadShareIndex()); setShareShowSaved(true) }}>
+                      <History className="size-3.5" /> History
+                    </Button>
+                    <Button size="sm" className="h-8 text-xs ml-auto" onClick={() => setShareDialogOpen(false)}>Done</Button>
+                  </div>
+                </>
+              )
+            })()
+          ) : (
+            /* ── Pre-generate View ───────────────────────────────────────── */
+            (() => {
+              const shareRoute = routes.find(r => r.id === currentRouteId)
+              const routeColor = shareRoute ? (shareRoute.color || routeColorPalette[(routeIndexById.get(shareRoute.id) ?? 0) % routeColorPalette.length]) : '#6b7280'
+              return (
+                <>
+                  {/* Header */}
+                  <div className="shrink-0 px-5 pt-5 pb-4">
+                    <DialogTitle className="text-base font-bold flex items-center gap-2.5">
+                      <Share2 className="size-4 text-primary shrink-0" />
+                      Share Route
+                    </DialogTitle>
+                    <p className="text-[11px] text-muted-foreground mt-1 ml-[2.625rem]">Create a shareable link for this route</p>
+                  </div>
+                  <Separator />
+                  <div className="px-5 py-4 flex flex-col gap-4">
+                    {/* Route preview */}
+                    {shareRoute ? (
+                      <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 flex flex-col gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <div className="size-3 rounded-full shrink-0" style={{ background: routeColor }} />
+                          <span className="text-[13px] font-semibold flex-1 truncate">{shareRoute.name}</span>
+                          <span className="text-[10px] font-mono bg-background px-1.5 py-0.5 rounded border border-border/50 shrink-0">{shareRoute.code}</span>
+                          <span className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded" style={{ background: shareRoute.shift === 'AM' ? 'hsl(38 100% 50%/0.12)' : 'hsl(250 60%55%/0.15)', color: shareRoute.shift === 'AM' ? 'hsl(38 95% 42%)' : 'hsl(250 80% 65%)' }}>{shareRoute.shift}</span>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground ml-[1.375rem]">{sortedDeliveryPoints.length} stop{sortedDeliveryPoints.length !== 1 ? 's' : ''} · current table view</p>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
+                        <p className="text-xs text-muted-foreground">No route selected</p>
+                      </div>
+                    )}
+                    {/* Info note */}
+                    <div className="flex items-start gap-2 rounded-lg bg-amber-500/8 border border-amber-500/20 px-3 py-2.5">
+                      <Info className="size-3.5 text-amber-500 shrink-0 mt-0.5" />
+                      <p className="text-[11px] text-muted-foreground leading-snug">
+                        Link works on <strong className="text-foreground">this device only</strong> — data is stored locally. Share it when someone with this same device needs access.
+                      </p>
+                    </div>
+                    {savedLinks.length > 0 && (
+                      <button
+                        onClick={() => setShareShowSaved(true)}
+                        className="text-[11px] text-primary/80 hover:text-primary flex items-center gap-1 self-start"
+                      >
+                        <History className="size-3.5" />{savedLinks.length} saved link{savedLinks.length !== 1 ? 's' : ''}
+                      </button>
+                    )}
+                  </div>
+                  <Separator />
+                  <div className="shrink-0 px-5 py-3 flex items-center justify-between gap-2">
+                    <Button size="sm" variant="ghost" className="h-8 text-xs text-muted-foreground" onClick={() => setShareDialogOpen(false)}>Cancel</Button>
+                    <Button size="sm" className="h-8 text-xs gap-1.5" onClick={generateShare} disabled={!shareRoute}>
+                      <Share2 className="size-3.5" /> Generate Link
+                    </Button>
+                  </div>
+                </>
+              )
+            })()
+          )}
         </DialogContent>
       </Dialog>
 

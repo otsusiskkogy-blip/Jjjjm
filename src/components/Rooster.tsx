@@ -58,6 +58,25 @@ interface RouteRef {
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
+const BACKUP_POSITIONS: readonly number[] = [6, 11]
+const BACKUP_POS_SET = new Set(BACKUP_POSITIONS)
+
+type CycleSlot = { type: 'route'; routeId: string; visualPos: number } | { type: 'backup'; visualPos: number }
+
+function buildMergedCycle(routeCycle: string[]): CycleSlot[] {
+  const result: CycleSlot[] = []
+  let ri = 0
+  const total = routeCycle.length + BACKUP_POSITIONS.length
+  for (let vp = 1; vp <= total; vp++) {
+    if (BACKUP_POS_SET.has(vp)) {
+      result.push({ type: 'backup', visualPos: vp })
+    } else if (ri < routeCycle.length) {
+      result.push({ type: 'route', routeId: routeCycle[ri++], visualPos: vp })
+    }
+  }
+  return result
+}
+
 const DAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 const MONTHS = [
   "Jan","Feb","Mar","Apr","May","Jun",
@@ -550,6 +569,10 @@ export function Rooster({ viewMode: viewModeProp = "week" }: { viewMode?: ViewMo
   const [genEndHour, setGenEndHour] = useState<number>(-1)
   const [isGenerating, setIsGenerating] = useState(false)
   const [historyQuery, setHistoryQuery] = useState("")
+  // Cycle assignment: visual position (1-indexed string key) → resourceId
+  const [cycleAssignment, setCycleAssignment] = useState<Record<string, string>>(
+    () => { try { return JSON.parse(localStorage.getItem("rooster_cycle_assignment") ?? "{}") } catch { return {} } }
+  )
 
   // Selected shifts for bulk actions
   const [selectedShifts, setSelectedShifts] = useState<string[]>([])
@@ -618,6 +641,7 @@ export function Rooster({ viewMode: viewModeProp = "week" }: { viewMode?: ViewMo
   useEffect(() => { localStorage.setItem("rooster_staff_route_starts", JSON.stringify(staffRouteStarts)) }, [staffRouteStarts])
   useEffect(() => { localStorage.setItem("rooster_staff_cycle_offset", JSON.stringify(staffCycleOffset)) }, [staffCycleOffset])
   useEffect(() => { localStorage.setItem("rooster_resource_order", JSON.stringify(resourceOrder)) }, [resourceOrder])
+  useEffect(() => { localStorage.setItem("rooster_cycle_assignment", JSON.stringify(cycleAssignment)) }, [cycleAssignment])
 
   // Auto-sync resourceOrder when resources are added/removed
   useEffect(() => {
@@ -675,6 +699,9 @@ export function Rooster({ viewMode: viewModeProp = "week" }: { viewMode?: ViewMo
     const orderMap = new Map(resourceOrder.map((id, i) => [id, i]))
     return [...resources].sort((a, b) => (orderMap.get(a.id) ?? 9999) - (orderMap.get(b.id) ?? 9999))
   }, [resources, resourceOrder])
+
+  // Merged cycle: routeCycle entries with Backup slots injected at BACKUP_POSITIONS
+  const mergedCycle = useMemo(() => buildMergedCycle(routeCycle), [routeCycle])
 
   const historyResults = useMemo(() => {
     const q = historyQuery.trim().toLowerCase()
@@ -1042,6 +1069,48 @@ export function Rooster({ viewMode: viewModeProp = "week" }: { viewMode?: ViewMo
       setIsGenerating(false)
     }
   }
+
+  // Auto-assign all staff to their next cycle slot based on last route history
+  const autoAssignCycle = useCallback(() => {
+    if (mergedCycle.length === 0 || routes.length === 0) { toast.error("No route cycle configured"); return }
+    const newAssignment: Record<string, string> = {}
+    const assignedStaff = new Set<string>()
+
+    // Pass 1: staff with shift history — find last cycle position, assign to next non-backup slot
+    for (const staff of orderedResources) {
+      const lastRouteShift = [...shifts]
+        .filter(s => s.resourceId === staff.id && !OFF_LABELS.has(s.title))
+        .sort((a, b) => b.date.localeCompare(a.date))[0]
+      if (!lastRouteShift) continue
+      const route = routes.find(r => r.name === lastRouteShift.title)
+      if (!route) continue
+      const curIdx = mergedCycle.findIndex(e => e.type === 'route' && e.routeId === route.id)
+      if (curIdx < 0) continue
+      for (let i = 1; i <= mergedCycle.length; i++) {
+        const e = mergedCycle[(curIdx + i) % mergedCycle.length]
+        if (e.type === 'backup') continue
+        const key = String(e.visualPos)
+        if (!newAssignment[key]) {
+          newAssignment[key] = staff.id
+          assignedStaff.add(staff.id)
+          break
+        }
+      }
+    }
+
+    // Pass 2: staff with no history — assign to first available non-backup slot
+    for (const staff of orderedResources) {
+      if (assignedStaff.has(staff.id)) continue
+      const available = mergedCycle.find(e => e.type !== 'backup' && !newAssignment[String(e.visualPos)])
+      if (available) {
+        newAssignment[String(available.visualPos)] = staff.id
+        assignedStaff.add(staff.id)
+      }
+    }
+
+    setCycleAssignment(newAssignment)
+    toast.success("Cycle assignments updated")
+  }, [mergedCycle, orderedResources, shifts, routes])
 
   const bulkChangeStaff = async (newResourceId: string) => {
     const selectedShiftObjects = shifts.filter(s => selectedShifts.includes(s.id))
@@ -1911,44 +1980,90 @@ export function Rooster({ viewMode: viewModeProp = "week" }: { viewMode?: ViewMo
 
             {/* ── Route Tab ── */}
             {manageTab === "route" && (() => {
-              const cycleList = routeCycle
-                .map(id => routes.find(r => r.id === id))
-                .filter((r): r is RouteRef => !!r)
-
               return (
                 <div className="flex flex-col gap-3">
 
-                  {/* Route cycle list */}
+                  {/* Cycle Assignment Table */}
                   <div className="flex flex-col gap-1.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Route Cycle Order</p>
-                    <div className="rounded-xl border border-border bg-card overflow-hidden">
-                      {cycleList.length === 0 ? (
-                        <div className="px-4 py-6 text-center text-[11px] text-muted-foreground italic">
-                          No routes. Add routes in Route List first.
-                        </div>
-                      ) : (
-                        <div className="divide-y divide-border/50 max-h-44 overflow-y-auto">
-                          {cycleList.map((r, pos) => {
-                            const shift = r.shift?.toUpperCase() ?? ""
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Cycle Assignment</p>
+                      <button
+                        type="button"
+                        onClick={autoAssignCycle}
+                        disabled={routeCycle.length === 0}
+                        className="inline-flex items-center gap-1 h-6 px-2.5 rounded-md bg-primary/10 text-primary text-[10px] font-semibold hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:pointer-events-none shrink-0"
+                      >
+                        <Zap className="size-3" />
+                        Auto Assign All
+                      </button>
+                    </div>
+                    {routeCycle.length === 0 ? (
+                      <div className="rounded-xl border border-border bg-card px-4 py-6 text-center text-[11px] text-muted-foreground italic">
+                        No routes. Add routes in Route List first.
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-border bg-card overflow-hidden">
+                        <div className="max-h-60 overflow-y-auto divide-y divide-border/50">
+                          {mergedCycle.map((slot) => {
+                            const isBackup = slot.type === 'backup'
+                            const route = !isBackup ? routes.find(r => r.id === (slot as { type: 'route'; routeId: string; visualPos: number }).routeId) : null
+                            const shift = route?.shift?.toUpperCase() ?? ""
                             const isAm = shift === "AM"
+                            const posKey = String(slot.visualPos)
+                            const assignedStaffId = cycleAssignment[posKey]
+                            const assignedStaff = assignedStaffId ? resources.find(r => r.id === assignedStaffId) : undefined
                             return (
-                              <div key={r.id} className="flex items-center gap-2.5 px-3 py-2.5">
-                                <span className="shrink-0 flex items-center justify-center w-5 h-5 rounded-full bg-primary/10 text-[10px] font-bold text-primary tabular-nums">
-                                  {pos + 1}
+                              <div
+                                key={slot.visualPos}
+                                className={`flex items-center gap-2.5 px-3 py-2 ${isBackup ? 'bg-muted/30 border-dashed' : ''}`}
+                              >
+                                <span className={`shrink-0 flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold tabular-nums ${
+                                  isBackup
+                                    ? 'bg-muted border border-dashed border-border text-muted-foreground'
+                                    : 'bg-primary/10 text-primary'
+                                }`}>
+                                  {slot.visualPos}
                                 </span>
-                                <span className="flex-1 text-[11px] font-medium truncate text-foreground">{r.name}</span>
-                                {shift && (
-                                  <span className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide ${
-                                    isAm ? "bg-blue-500/15 text-blue-600 dark:text-blue-400" : "bg-orange-500/15 text-orange-600 dark:text-orange-400"
-                                  }`}>{shift}</span>
+                                {isBackup ? (
+                                  <span className="flex-1 text-[11px] font-semibold text-muted-foreground italic tracking-wide">Backup</span>
+                                ) : (
+                                  <>
+                                    <span className="flex-1 text-[11px] font-medium truncate text-foreground">{route?.name ?? (slot as { type: 'route'; routeId: string; visualPos: number }).routeId}</span>
+                                    {shift && (
+                                      <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
+                                        isAm ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400' : 'bg-orange-500/15 text-orange-600 dark:text-orange-400'
+                                      }`}>{shift}</span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      title="Click to change driver"
+                                      onClick={() => {
+                                        const curIdx = orderedResources.findIndex(r => r.id === assignedStaffId)
+                                        const nextStaff = curIdx < 0
+                                          ? orderedResources[0]
+                                          : curIdx + 1 < orderedResources.length
+                                            ? orderedResources[curIdx + 1]
+                                            : undefined
+                                        setCycleAssignment(prev => {
+                                          const next = { ...prev }
+                                          if (nextStaff) next[posKey] = nextStaff.id
+                                          else delete next[posKey]
+                                          return next
+                                        })
+                                      }}
+                                      className="shrink-0 max-w-[68px] truncate text-[9px] px-1.5 py-0.5 rounded border border-border/60 hover:border-primary/50 hover:bg-primary/5 transition-colors text-muted-foreground hover:text-foreground"
+                                    >
+                                      {assignedStaff?.name ?? "—"}
+                                    </button>
+                                  </>
                                 )}
                               </div>
                             )
                           })}
                         </div>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-muted-foreground px-0.5">6 work days per route, then 1 off day.</p>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-muted-foreground px-0.5">6 work days per route, then 1 off day. Click a name to cycle through drivers.</p>
                   </div>
 
                   {/* Auto Generate card */}
